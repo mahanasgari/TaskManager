@@ -1,6 +1,8 @@
-from db import engine, Base
-import models
+from __future__ import annotations
 
-Base.metadata.create_all(bind=engine)
+from db import initialize_database
 
-print("DB Created")
+
+if __name__ == "__main__":
+    initialize_database(force_recreate=True)
+    print("Database recreated successfully")
