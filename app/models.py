@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 
-from db import Base
+from app.db import Base
 
 
 class Task(Base):
@@ -17,16 +17,21 @@ class Task(Base):
     due_at_utc = Column(DateTime, nullable=False, index=True)
     timezone = Column(String(64), nullable=False, default="Asia/Tehran")
     status = Column(String(20), nullable=False, default="pending", index=True)
+    pre_reminded = Column(Boolean, nullable=False, default=False)
     next_attempt_at_utc = Column(DateTime, nullable=False, index=True)
     claimed_at_utc = Column(DateTime, nullable=True)
     sent_at_utc = Column(DateTime, nullable=True)
     completed_at_utc = Column(DateTime, nullable=True)
     attempt_count = Column(Integer, nullable=False, default=0)
     last_error = Column(Text, nullable=True)
-    created_at_utc = Column(DateTime, nullable=False, default=dt.datetime.utcnow)
+    created_at_utc = Column(
+        DateTime,
+        nullable=False,
+        default=lambda: dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+    )
     updated_at_utc = Column(
         DateTime,
         nullable=False,
-        default=dt.datetime.utcnow,
-        onupdate=dt.datetime.utcnow,
+        default=lambda: dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
+        onupdate=lambda: dt.datetime.now(dt.timezone.utc).replace(tzinfo=None),
     )

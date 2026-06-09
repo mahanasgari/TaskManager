@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import case
 
-from db import SessionLocal
-from models import Task
+from app.db import SessionLocal
+from app.models import Task
 
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,7 @@ SENT = "sent"
 FAILED = "failed"
 DONE = "done"
 CLAIMABLE_STATUSES = {PENDING, FAILED}
+MAX_ATTEMPTS = 10
 
 
 class TaskRepository:
@@ -32,7 +33,16 @@ class TaskRepository:
         source_text: str,
         due_at_utc: datetime,
         timezone_name: str,
+        now_utc: datetime,
     ) -> Task:
+        pre_reminded_at = due_at_utc - timedelta(minutes=10)
+        if pre_reminded_at > now_utc:
+            pre_reminded = False
+            next_attempt = pre_reminded_at
+        else:
+            pre_reminded = True
+            next_attempt = due_at_utc
+
         with self._session_factory() as session:
             task = Task(
                 user_id=user_id,
@@ -41,7 +51,8 @@ class TaskRepository:
                 due_at_utc=due_at_utc,
                 timezone=timezone_name,
                 status=PENDING,
-                next_attempt_at_utc=due_at_utc,
+                pre_reminded=pre_reminded,
+                next_attempt_at_utc=next_attempt,
                 claimed_at_utc=None,
                 sent_at_utc=None,
                 completed_at_utc=None,
@@ -139,6 +150,7 @@ class TaskRepository:
                 .filter(
                     Task.status.in_(CLAIMABLE_STATUSES),
                     Task.next_attempt_at_utc <= now_utc,
+                    Task.attempt_count < MAX_ATTEMPTS,
                 )
                 .order_by(Task.next_attempt_at_utc.asc(), Task.id.asc())
                 .limit(limit)
@@ -168,6 +180,41 @@ class TaskRepository:
             session.commit()
             session.refresh(task)
             return task
+
+    def mark_pre_reminded(self, task_id: int, now_utc: datetime) -> Task | None:
+        with self._session_factory() as session:
+            task = session.query(Task).filter(Task.id == task_id).one_or_none()
+            if task is None:
+                return None
+
+            task.pre_reminded = True
+            task.claimed_at_utc = None
+            task.status = PENDING
+            task.next_attempt_at_utc = task.due_at_utc
+            task.updated_at_utc = now_utc
+            task.last_error = None
+            session.commit()
+            session.refresh(task)
+            return task
+
+    def fail_exhausted_tasks(self, now_utc: datetime) -> int:
+        with self._session_factory() as session:
+            exhausted = (
+                session.query(Task)
+                .filter(
+                    Task.status.in_(CLAIMABLE_STATUSES),
+                    Task.attempt_count >= MAX_ATTEMPTS,
+                )
+                .all()
+            )
+            for task in exhausted:
+                task.status = FAILED
+                task.claimed_at_utc = None
+                task.next_attempt_at_utc = task.next_attempt_at_utc
+                task.updated_at_utc = now_utc
+                task.last_error = "Exceeded max retry attempts"
+            session.commit()
+            return len(exhausted)
 
     def mark_failed(
         self,

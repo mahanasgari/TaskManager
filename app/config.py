@@ -40,8 +40,9 @@ def _optional_int_env(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
-    gemini_api_key: str
-    gemini_model: str
+    openrouter_api_key: str
+    openrouter_model: str
+    openrouter_base_url: str
     app_timezone: str
     log_level: str
     log_file: str
@@ -63,8 +64,9 @@ class Settings:
 def get_settings() -> Settings:
     return Settings(
         bot_token=_required_env("BOT_TOKEN"),
-        gemini_api_key=_required_env("GEMINI_API_KEY"),
-        gemini_model=_optional_env("GEMINI_MODEL", "gemini-2.0-flash"),
+        openrouter_api_key=_required_env("OPENROUTER_API_KEY"),
+        openrouter_model=_optional_env("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"),
+        openrouter_base_url=_optional_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         app_timezone=_optional_env("APP_TIMEZONE", "Asia/Tehran"),
         log_level=_optional_env("LOG_LEVEL", "INFO"),
         log_file=_optional_env("LOG_FILE", "logs/task_manager.log"),

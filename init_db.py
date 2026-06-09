@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from db import initialize_database
+from app.db import initialize_database
 
 
 if __name__ == "__main__":

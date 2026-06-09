@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import dateparser
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from pydantic import BaseModel, Field
 
-from config import Settings
-from time_utils import to_utc_naive
+from app.config import Settings
+from app.time_utils import to_utc_naive
 
 
 logger = logging.getLogger(__name__)
@@ -49,58 +49,64 @@ class ParsedTask:
 class TaskParser:
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._client = genai.Client(api_key=settings.gemini_api_key)
+        self._client = OpenAI(
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+            default_headers={
+                "HTTP-Referer": "https://github.com/anoncredi/TaskMan",
+                "X-Title": "TaskMan",
+            },
+        )
 
     async def parse(self, text: str) -> ParsedTask:
         now_local = datetime.now(self._settings.timezone).replace(microsecond=0)
 
         try:
-            draft = await asyncio.to_thread(self._parse_with_gemini, text, now_local)
-            return self._build_result(draft.title, draft.datetime, text, now_local, "gemini")
+            draft = await asyncio.to_thread(self._parse_with_llm, text, now_local)
+            return self._build_result(draft.title, draft.datetime, text, now_local, "openrouter")
         except Exception as exc:
-            logger.warning("Gemini parse failed, using deterministic parser: %s", exc)
+            logger.warning("LLM parse failed, using deterministic parser: %s", exc)
             return self._parse_deterministic(text, now_local)
 
-    def _parse_with_gemini(self, text: str, now_local: datetime) -> TaskDraft:
+    def _parse_with_llm(self, text: str, now_local: datetime) -> TaskDraft:
         default_due = (now_local + timedelta(days=1)).replace(
             hour=9,
             minute=0,
             second=0,
             microsecond=0,
         )
-        prompt = f"""
-You are a task extraction engine.
-
-Current time: {now_local.strftime('%Y-%m-%d %H:%M (%A)')}
-User input: "{text}"
-
-Return JSON with:
-- title: short clear task title in the same language as the input
-- datetime: exact local datetime in YYYY-MM-DD HH:MM
-
-Rules:
-- If a time is missing, use {default_due.strftime('%Y-%m-%d %H:%M')}
-- Do not invent extra meaning
-- Remove scheduling words from the title
-- Do not return any text outside the JSON object
-""".strip()
-
-        response = self._client.models.generate_content(
-            model=self._settings.gemini_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=TaskDraft,
-            ),
+        system_prompt = (
+            "You are a task extraction engine. "
+            "Always respond with valid JSON only, no extra text."
+        )
+        user_prompt = (
+            f"Current time: {now_local.strftime('%Y-%m-%d %H:%M (%A)')}\n"
+            f'User input: "{text}"\n\n'
+            "Return JSON with:\n"
+            "- title: short clear task title in the same language as the input\n"
+            '- datetime: exact local datetime in "YYYY-MM-DD HH:MM"\n\n'
+            "Rules:\n"
+            f"- If a time is missing, use {default_due.strftime('%Y-%m-%d %H:%M')}\n"
+            "- Do not invent extra meaning\n"
+            "- Remove scheduling words from the title"
         )
 
-        parsed = response.parsed
-        if parsed is None:
-            raise ValueError("Gemini did not return structured data")
+        response = self._client.chat.completions.create(
+            model=self._settings.openrouter_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=256,
+        )
 
-        if isinstance(parsed, TaskDraft):
-            return parsed
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("LLM returned empty response")
 
+        parsed = json.loads(content)
         return TaskDraft.model_validate(parsed)
 
     def _parse_deterministic(self, text: str, now_local: datetime) -> ParsedTask:

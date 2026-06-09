@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from config import Settings
-from task_parser import ParsedTask, TaskParser
-from task_repository import TaskRepository
-from time_utils import format_local_datetime, now_utc_naive
+from app.config import Settings
+from app.task_parser import ParsedTask, TaskParser
+from app.task_repository import TaskRepository
+from app.time_utils import format_local_datetime, now_utc_naive
 
 
 @dataclass(frozen=True)
@@ -27,12 +27,14 @@ class TaskService:
 
     async def create_task(self, user_id: int, text: str) -> CreatedTask:
         parsed = await self.parser.parse(text)
+        now = now_utc_naive()
         task = self.repository.create_task(
             user_id=user_id,
             title=parsed.title,
             source_text=text,
             due_at_utc=parsed.due_at_utc,
             timezone_name=self.settings.app_timezone,
+            now_utc=now,
         )
         return CreatedTask(task=task, parsed=parsed)
 

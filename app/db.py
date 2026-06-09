@@ -23,7 +23,7 @@ Base = declarative_base()
 
 
 def initialize_database(force_recreate: bool = False) -> None:
-    from models import Task
+    from app.models import Task
 
     inspector = inspect(engine)
 
