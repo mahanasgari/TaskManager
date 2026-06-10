@@ -106,6 +106,54 @@ class TaskRepository:
             session.refresh(task)
             return task
 
+    def update_task(
+        self,
+        user_id: int,
+        task_id: int,
+        *,
+        title: str | None = None,
+        due_at_utc: datetime | None = None,
+        timezone_name: str | None = None,
+        source_text: str | None = None,
+    ) -> Task | None:
+        with self._session_factory() as session:
+            task = (
+                session.query(Task)
+                .filter(Task.user_id == user_id, Task.id == task_id)
+                .one_or_none()
+            )
+            if task is None:
+                return None
+
+            now = datetime.now().replace(microsecond=0)
+
+            if title is not None:
+                task.title = title
+            if source_text is not None:
+                task.source_text = source_text
+            if timezone_name is not None:
+                task.timezone = timezone_name
+            if due_at_utc is not None:
+                task.due_at_utc = due_at_utc
+                pre_reminded_at = due_at_utc - timedelta(minutes=10)
+                if pre_reminded_at > now:
+                    task.pre_reminded = False
+                    task.next_attempt_at_utc = pre_reminded_at
+                else:
+                    task.pre_reminded = True
+                    task.next_attempt_at_utc = due_at_utc
+                task.status = PENDING
+                task.sent_at_utc = None
+                task.claimed_at_utc = None
+                task.completed_at_utc = None
+                task.attempt_count = 0
+                task.last_error = None
+
+            task.updated_at_utc = now
+            session.commit()
+            session.refresh(task)
+            return task
+
     def delete_task(self, user_id: int, task_id: int) -> bool:
         with self._session_factory() as session:
             task = (

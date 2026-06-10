@@ -5,8 +5,16 @@ import html
 import logging
 from contextlib import suppress
 
-from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from app.config import Settings
 from app.scheduler import TaskScheduler
@@ -231,6 +239,295 @@ async def delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"\U0001f5d1\ufe0f \u06a9\u0627\u0631 #{task_id} \u062d\u0630\u0641 \u0634\u062f.")
 
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+
+    if not text:
+        return
+
+    edit_state = context.user_data.pop("edit", None)
+    if edit_state:
+        await _process_edit_input(update, context, user_id, text, edit_state)
+        return
+
+    service = _get_service(context)
+
+    try:
+        created = await service.create_task(user_id, text)
+    except Exception:
+        logger.exception("Failed to create task from free text")
+        await update.message.reply_text(
+            "\u0646\u062a\u0648\u0627\u0646\u0633\u062a\u0645 \u0627\u06cc\u0646 \u0631\u0627 \u0628\u0647\u200c\u0639\u0646\u0648\u0627\u0646 \u06cc\u06a9 \u06a9\u0627\u0631 \u0628\u0641\u0647\u0645\u0645.\n"
+            "\u0628\u0631\u0627\u06cc \u062b\u0628\u062a \u062f\u0633\u062a\u06cc \u0627\u0632 /add \u0627\u0633\u062a\u0641\u0627\u062f\u0647 \u06a9\u0646."
+        )
+        return
+
+    due_text = service.format_due_datetime(created.task.due_at_utc, created.task.timezone)
+    await update.message.reply_text(
+        "\u2705 \u06a9\u0627\u0631 \u062b\u0628\u062a \u0634\u062f\n\n"
+        f"\U0001f4dd <b>{html.escape(created.task.title)}</b>\n"
+        f"\u23f0 {due_text}\n"
+        f"\U0001f194 #{created.task.id}",
+        parse_mode="HTML",
+    )
+
+
+async def _process_edit_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    text: str,
+    edit_state: dict,
+) -> None:
+    service = _get_service(context)
+    task_id = edit_state["task_id"]
+    field = edit_state["field"]
+
+    if field == "title":
+        updated = service.repository.update_task(user_id, task_id, title=text)
+        if updated:
+            await update.message.reply_text(
+                f"\u2705 \u0639\u0646\u0648\u0627\u0646 \u0628\u0647\u200c\u0631\u0648\u0632 \u0634\u062f: <b>{html.escape(updated.title)}</b>",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc.")
+    elif field == "time":
+        try:
+            updated = await service.update_task(user_id, task_id, text, update_title=False, update_time=True)
+        except Exception:
+            await update.message.reply_text("\u0646\u062a\u0648\u0627\u0646\u0633\u062a\u0645 \u0632\u0645\u0627\u0646 \u0631\u0627 \u062a\u0634\u062e\u06cc\u0635 \u062f\u0647\u0645.")
+            return
+        if updated:
+            due_text = service.format_due_datetime(updated.task.due_at_utc, updated.task.timezone)
+            await update.message.reply_text(f"\u2705 \u0632\u0645\u0627\u0646 \u0628\u0647\u200c\u0631\u0648\u0632 \u0634\u062f: {due_text}", parse_mode="HTML")
+        else:
+            await update.message.reply_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc.")
+    elif field == "both":
+        try:
+            updated = await service.update_task(user_id, task_id, text, update_title=True, update_time=True)
+        except Exception:
+            await update.message.reply_text(
+                "\u0646\u062a\u0648\u0627\u0646\u0633\u062a\u0645 \u0627\u06cc\u0646 \u0631\u0627 \u0628\u0641\u0647\u0645\u0645.\n"
+                "\u0628\u0631\u0627\u06cc \u0648\u06cc\u0631\u0627\u06cc\u0634 \u062f\u0633\u062a\u06cc: /edit 3 title:\u0645\u062a\u0646 \u06cc\u0627 /edit 3 time:\u0632\u0645\u0627\u0646"
+            )
+            return
+        if updated:
+            due_text = service.format_due_datetime(updated.task.due_at_utc, updated.task.timezone)
+            await update.message.reply_text(
+                f"\u2705 \u06a9\u0627\u0631 \u0648\u06cc\u0631\u0627\u06cc\u0634 \u0634\u062f\n\n"
+                f"\U0001f4dd <b>{html.escape(updated.task.title)}</b>\n"
+                f"\u23f0 {due_text}\n"
+                f"\U0001f194 #{updated.task.id}",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc.")
+
+
+async def done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    service = _get_service(context)
+
+    try:
+        task_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await query.edit_message_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u062f\u0631\u06cc\u0627\u0641\u062a \u0634\u0646\u0627\u0633\u0647 \u06a9\u0627\u0631.")
+        return
+
+    try:
+        task = service.mark_done(user_id, task_id)
+    except Exception:
+        logger.exception("Failed to mark task done via callback")
+        await query.edit_message_text(
+            "\u062e\u0637\u0627\u06cc\u06cc \u062f\u0631 \u062b\u0628\u062a \u0627\u0646\u062c\u0627\u0645 \u06a9\u0627\u0631 \u0631\u062e \u062f\u0627\u062f."
+        )
+        return
+
+    if task is None:
+        await query.edit_message_text(
+            f"\u2705 \u0627\u06cc\u0646 \u06a9\u0627\u0631 \u0627\u0632 \u0642\u0628\u0644 \u0627\u0646\u062c\u0627\u0645 \u0634\u062f\u0647 \u06cc\u0627 \u067e\u06cc\u062f\u0627 \u0646\u0634\u062f."
+        )
+        return
+
+    await query.edit_message_text(
+        f"\u2705 <b>{html.escape(task.title)}</b> \u0627\u0646\u062c\u0627\u0645 \u0634\u062f.",
+        parse_mode="HTML",
+    )
+
+
+async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    service = _get_service(context)
+
+    if not context.args:
+        await update.message.reply_text(
+            "\u0627\u0633\u062a\u0641\u0627\u062f\u0647: /edit <id> [\u0645\u062a\u0646 \u062c\u062f\u06cc\u062f]\n"
+            "\u0645\u062b\u0627\u0644: /edit 3 \u0641\u0631\u062f\u0627 \u0633\u0627\u0639\u062a \u06f1\u06f0 \u062e\u0631\u06cc\u062f \u0634\u06cc\u0631"
+        )
+        return
+
+    try:
+        task_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("\u0634\u0646\u0627\u0633\u0647 \u06a9\u0627\u0631 \u0628\u0627\u06cc\u062f \u0639\u062f\u062f \u0628\u0627\u0634\u062f.")
+        return
+
+    task = service.get_task(user_id, task_id)
+    if task is None:
+        await update.message.reply_text("\u0686\u0646\u06cc\u0646 \u06a9\u0627\u0631\u06cc \u067e\u06cc\u062f\u0627 \u0646\u0634\u062f.")
+        return
+
+    # One-command edit: /edit <id> <text>
+    if len(context.args) > 1:
+        text = " ".join(context.args[1:])
+
+        lower = text.lower()
+        title_prefix = lower.startswith("title:")
+        time_prefix = lower.startswith("time:")
+
+        if title_prefix and not time_prefix:
+            new_title = text.split(":", 1)[1].strip()
+            if not new_title:
+                await update.message.reply_text("\u0645\u062a\u0646 \u062c\u062f\u06cc\u062f \u0631\u0627 \u0628\u0646\u0648\u06cc\u0633\u06cc\u062f.")
+                return
+            updated = service.repository.update_task(user_id, task_id, title=new_title)
+            if updated:
+                await update.message.reply_text(
+                    f"\u2705 \u0639\u0646\u0648\u0627\u0646 \u0628\u0647\u200c\u0631\u0648\u0632 \u0634\u062f: <b>{html.escape(updated.title)}</b>",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc.")
+            return
+
+        if time_prefix and not title_prefix:
+            new_time = text.split(":", 1)[1].strip()
+            if not new_time:
+                await update.message.reply_text("\u0632\u0645\u0627\u0646 \u062c\u062f\u06cc\u062f \u0631\u0627 \u0628\u0646\u0648\u06cc\u0633\u06cc\u062f.")
+                return
+            try:
+                updated = await service.update_task(user_id, task_id, new_time, update_title=False, update_time=True)
+            except Exception:
+                await update.message.reply_text("\u0646\u062a\u0648\u0627\u0646\u0633\u062a\u0645 \u0632\u0645\u0627\u0646 \u0631\u0627 \u062a\u0634\u062e\u06cc\u0635 \u062f\u0647\u0645.")
+                return
+            if updated:
+                due_text = service.format_due_datetime(updated.task.due_at_utc, updated.task.timezone)
+                await update.message.reply_text(f"\u2705 \u0632\u0645\u0627\u0646 \u0628\u0647\u200c\u0631\u0648\u0632 \u0634\u062f: {due_text}", parse_mode="HTML")
+            else:
+                await update.message.reply_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc.")
+            return
+
+        # Full text re-parse (no prefix)
+        try:
+            updated = await service.update_task(user_id, task_id, text, update_title=True, update_time=True)
+        except Exception:
+            await update.message.reply_text(
+                "\u0646\u062a\u0648\u0627\u0646\u0633\u062a\u0645 \u0627\u06cc\u0646 \u0631\u0627 \u0628\u0641\u0647\u0645\u0645.\n"
+                "\u0628\u0631\u0627\u06cc \u0648\u06cc\u0631\u0627\u06cc\u0634 \u062f\u0633\u062a\u06cc: /edit 3 title:\u0645\u062a\u0646 \u06cc\u0627 /edit 3 time:\u0632\u0645\u0627\u0646"
+            )
+            return
+        if updated:
+            due_text = service.format_due_datetime(updated.task.due_at_utc, updated.task.timezone)
+            await update.message.reply_text(
+                f"\u2705 \u06a9\u0627\u0631 \u0648\u06cc\u0631\u0627\u06cc\u0634 \u0634\u062f\n\n"
+                f"\U0001f4dd <b>{html.escape(updated.task.title)}</b>\n"
+                f"\u23f0 {due_text}\n"
+                f"\U0001f194 #{updated.task.id}",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc.")
+        return
+
+    # Conversation flow: /edit <id> (no extra text)
+    due_text = service.format_due_datetime(task.due_at_utc, task.timezone)
+    status_label = STATUS_LABELS.get(task.status, task.status)
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("\U0001f4dd \u0639\u0646\u0648\u0627\u0646", callback_data=f"edit_title:{task.id}"),
+            InlineKeyboardButton("\u23f0 \u0632\u0645\u0627\u0646", callback_data=f"edit_time:{task.id}"),
+        ],
+        [
+            InlineKeyboardButton("\U0001f504 \u0647\u0631 \u062f\u0648", callback_data=f"edit_both:{task.id}"),
+            InlineKeyboardButton("\u274c \u0644\u063a\u0648", callback_data=f"edit_cancel:{task.id}"),
+        ],
+    ])
+    await update.message.reply_text(
+        f"\U0001f4dd <b>{html.escape(task.title)}</b>\n"
+        f"\u23f0 {due_text}\n"
+        f"\U0001f194 #{task.id}  |  {status_label}\n\n"
+        "\u0686\u0647 \u0686\u06cc\u0632\u06cc \u0631\u0627 \u0648\u06cc\u0631\u0627\u06cc\u0634 \u06a9\u0646\u06cc\u062f\u061f",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+async def edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    user_id = update.effective_user.id
+    service = _get_service(context)
+
+    try:
+        action, task_id_str = query.data.split(":", 1)
+        task_id = int(task_id_str)
+    except (ValueError, IndexError):
+        await query.edit_message_text("\u062e\u0637\u0627\u06cc \u062f\u0631 \u062f\u0631\u06cc\u0627\u0641\u062a \u0627\u0637\u0644\u0627\u0639\u0627\u062a.")
+        return
+
+    if action == "edit_cancel":
+        context.user_data.pop("edit", None)
+        await query.edit_message_text("\u0648\u06cc\u0631\u0627\u06cc\u0634 \u0644\u063a\u0648 \u0634\u062f.")
+        return
+
+    if action not in ("edit_title", "edit_time", "edit_both"):
+        return
+
+    task = service.get_task(user_id, task_id)
+    if task is None:
+        context.user_data.pop("edit", None)
+        await query.edit_message_text("\u06a9\u0627\u0631 \u067e\u06cc\u062f\u0627 \u0646\u0634\u062f.")
+        return
+
+    context.user_data["edit"] = {"task_id": task_id, "field": action.split("_", 1)[1]}
+
+    if action == "edit_title":
+        await query.edit_message_text(
+            f"\U0001f4dd \u0639\u0646\u0648\u0627\u0646 \u0641\u0639\u0644\u06cc: <b>{html.escape(task.title)}</b>\n\n"
+            "\u0639\u0646\u0648\u0627\u0646 \u062c\u062f\u06cc\u062f \u0631\u0627 \u0628\u0641\u0631\u0633\u062a:",
+            parse_mode="HTML",
+        )
+    elif action == "edit_time":
+        due_text = service.format_due_datetime(task.due_at_utc, task.timezone)
+        await query.edit_message_text(
+            f"\u23f0 \u0632\u0645\u0627\u0646 \u0641\u0639\u0644\u06cc: {due_text}\n\n"
+            "\u0632\u0645\u0627\u0646 \u062c\u062f\u06cc\u062f \u0631\u0627 \u0628\u0641\u0631\u0633\u062a (\u0645\u062b\u0644: \u0641\u0631\u062f\u0627 \u0633\u0627\u0639\u062a \u06f1\u06f0 \u0634\u0628):",
+            parse_mode="HTML",
+        )
+    elif action == "edit_both":
+        due_text = service.format_due_datetime(task.due_at_utc, task.timezone)
+        await query.edit_message_text(
+            f"\U0001f4dd <b>{html.escape(task.title)}</b>\n"
+            f"\u23f0 {due_text}\n\n"
+            "\u0645\u062a\u0646 \u06a9\u0627\u0645\u0644 \u06a9\u0627\u0631 \u0631\u0627 \u0628\u0641\u0631\u0633\u062a (\u0645\u062b\u0644: \u0641\u0631\u062f\u0627 \u0633\u0627\u0639\u062a \u06f8 \u062e\u0631\u06cc\u062f \u0646\u0627\u0646):",
+            parse_mode="HTML",
+        )
+
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cleared = context.user_data.pop("edit", None)
+    if cleared:
+        await update.message.reply_text("\u0648\u06cc\u0631\u0627\u06cc\u0634 \u0644\u063a\u0648 \u0634\u062f.")
+    else:
+        await update.message.reply_text("\u0648\u06cc\u0631\u0627\u06cc\u0634\u06cc \u062f\u0631 \u0627\u0646\u062a\u0638\u0627\u0631 \u0646\u06cc\u0633\u062a.")
+
+
 async def _post_init(application: Application) -> None:
     scheduler: TaskScheduler = application.bot_data["scheduler"]
     scheduler_task = application.create_task(scheduler.run(application.bot))
@@ -270,6 +567,11 @@ def build_application(settings: Settings) -> Application:
     application.add_handler(CommandHandler("list", list_tasks))
     application.add_handler(CommandHandler("done", done))
     application.add_handler(CommandHandler("delete", delete))
+    application.add_handler(CommandHandler("edit", edit_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(CallbackQueryHandler(done_callback, pattern=r"^done:\d+$"))
+    application.add_handler(CallbackQueryHandler(edit_callback, pattern=r"^edit_(title|time|both|cancel):\d+$"))
 
     return application
 

@@ -14,6 +14,12 @@ class CreatedTask:
     parsed: ParsedTask
 
 
+@dataclass(frozen=True)
+class UpdatedTask:
+    task: object
+    parsed: ParsedTask
+
+
 class TaskService:
     def __init__(
         self,
@@ -37,6 +43,35 @@ class TaskService:
             now_utc=now,
         )
         return CreatedTask(task=task, parsed=parsed)
+
+    def get_task(self, user_id: int, task_id: int):
+        return self.repository.get_user_task(user_id, task_id)
+
+    async def update_task(
+        self,
+        user_id: int,
+        task_id: int,
+        text: str,
+        *,
+        update_title: bool = True,
+        update_time: bool = True,
+    ) -> UpdatedTask | None:
+        task = self.repository.get_user_task(user_id, task_id)
+        if task is None:
+            return None
+
+        parsed = await self.parser.parse(text)
+
+        updated = self.repository.update_task(
+            user_id=user_id,
+            task_id=task_id,
+            title=parsed.title if update_title else None,
+            due_at_utc=parsed.due_at_utc if update_time else None,
+            source_text=text if (update_title and update_time) else None,
+        )
+        if updated is None:
+            return None
+        return UpdatedTask(task=updated, parsed=parsed)
 
     def list_tasks(self, user_id: int):
         return self.repository.list_user_tasks(user_id)

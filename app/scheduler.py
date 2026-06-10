@@ -4,8 +4,8 @@ import asyncio
 import html
 import logging
 
-from telegram import Bot
-from telegram.error import BadRequest
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest, Forbidden
 
 from app.config import Settings
 from app.task_repository import TaskRepository
@@ -70,13 +70,24 @@ class TaskScheduler:
             f"\U0001f194 #{task.id}"
         )
 
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("\u2705 \u0627\u0646\u062c\u0627\u0645 \u0634\u062f", callback_data=f"done:{task.id}"),
+                InlineKeyboardButton("\u270f\ufe0f \u0648\u06cc\u0631\u0627\u06cc\u0634", callback_data=f"edit_both:{task.id}"),
+            ]
+        ])
+
         try:
-            await bot.send_message(chat_id=task.user_id, text=message, parse_mode="HTML")
+            await bot.send_message(chat_id=task.user_id, text=message, parse_mode="HTML", reply_markup=keyboard)
             self._repository.mark_pre_reminded(task.id, now)
             logger.info("Pre-reminder sent for task %s", task.id)
+        except Forbidden:
+            logger.warning("Bot blocked by user %s — marking task %s as sent", task.user_id, task.id)
+            self._repository.mark_sent(task.id, now)
         except BadRequest as exc:
-            if "chat not found" in str(exc).lower():
-                logger.warning("Chat not found for user %s — permanently failing task %s", task.user_id, task.id)
+            exc_lower = str(exc).lower()
+            if "chat not found" in exc_lower or "blocked" in exc_lower or "deactivated" in exc_lower:
+                logger.warning("Cannot reach user %s — marking task %s as sent: %s", task.user_id, task.id, exc)
                 self._repository.mark_sent(task.id, now)
             elif now >= task.due_at_utc:
                 self._repository.mark_pre_reminded(task.id, now)
@@ -112,13 +123,24 @@ class TaskScheduler:
             f"\U0001f194 #{task.id}"
         )
 
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("\u2705 \u0627\u0646\u062c\u0627\u0645 \u0634\u062f", callback_data=f"done:{task.id}"),
+                InlineKeyboardButton("\u270f\ufe0f \u0648\u06cc\u0631\u0627\u06cc\u0634", callback_data=f"edit_both:{task.id}"),
+            ]
+        ])
+
         try:
-            await bot.send_message(chat_id=task.user_id, text=message, parse_mode="HTML")
+            await bot.send_message(chat_id=task.user_id, text=message, parse_mode="HTML", reply_markup=keyboard)
             self._repository.mark_sent(task.id, now)
             logger.info("Notified task %s for user %s", task.id, task.user_id)
+        except Forbidden:
+            logger.warning("Bot blocked by user %s — marking task %s as sent", task.user_id, task.id)
+            self._repository.mark_sent(task.id, now)
         except BadRequest as exc:
-            if "chat not found" in str(exc).lower():
-                logger.warning("Chat not found for user %s — permanently failing task %s", task.user_id, task.id)
+            exc_lower = str(exc).lower()
+            if "chat not found" in exc_lower or "blocked" in exc_lower or "deactivated" in exc_lower:
+                logger.warning("Cannot reach user %s — marking task %s as sent: %s", task.user_id, task.id, exc)
                 self._repository.mark_sent(task.id, now)
             else:
                 self._repository.mark_failed(
